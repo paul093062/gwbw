@@ -1,0 +1,404 @@
+local Players = game:GetService("Players") 
+local RunService = game:GetService("RunService") 
+local Camera = workspace.CurrentCamera 
+local UserInputService = game:GetService("UserInputService") 
+local TweenService = game:GetService("TweenService") 
+local ReplicatedStorage = game:GetService("ReplicatedStorage") 
+local Lighting = game:GetService("Lighting") 
+local plr = Players.LocalPlayer 
+local WorldRoot = workspace 
+
+-- ⚙️ CONFIG
+local MAX_RANGE = 400 -- 🔄 Changed from 260 to 400
+local TELEPORT_HEIGHT = 3 
+local STAR_RADIUS = 4 
+local CORNER_SWITCH_SPEED = 0.12 
+local INSTANT_SNAP_ALWAYS = true 
+
+-- ✅ LOAD/SAVE
+local function LoadSaved(key, default) 
+    local defaultStates = { 
+        Ragebot = true,     -- Force always on by default
+        AutoQueue = true,   -- Force always on by default
+        QueueMode = "1v1", 
+        UI_Open = false,
+        AutoPick = true,    -- Force always on by default
+        AutoVote = true     -- Force always on by default
+    } 
+    local p_default = defaultStates[key] ~= nil and defaultStates[key] or default
+    local ok, val = pcall(function() return plr:GetAttribute("OishiHub_"..key) end) 
+    return ok and val ~= nil and val or p_default
+end 
+
+local function SaveSetting(key, value) 
+    pcall(function() plr:SetAttribute("OishiHub_"..key, value) end) 
+end 
+
+-- ✅ FEATURES TABLE 
+local Features = { 
+    UI_Open = LoadSaved("UI_Open", false), 
+    Main = { 
+        Ragebot = LoadSaved("Ragebot", true), 
+        AutoPick = LoadSaved("AutoPick", true),
+        AutoVote = LoadSaved("AutoVote", true),
+        AutoQueue = LoadSaved("AutoQueue", true), 
+        QueueMode = LoadSaved("QueueMode", "1v1") 
+    }
+} 
+
+local OriginalGravity = workspace.Gravity 
+local CurrentTargetHead = nil 
+local CurrentCornerIndex = 1 
+local LastCornerSwitch = 0 
+
+-- ✅ SAVE ORIGINAL GRAVITY ON START + WHEN IT CHANGES 
+task.spawn(function() 
+    workspace:GetPropertyChangedSignal("Gravity"):Connect(function() 
+        if not Features.Main.Ragebot then 
+            OriginalGravity = workspace.Gravity 
+        end 
+    end) 
+end) 
+
+-- ✅ STAR MOVEMENT POINTS 
+local STAR_POINTS = {} 
+do 
+    local angleStep = math.rad(72) 
+    local startAngle = math.rad(-90) 
+    for i = 1, 5 do 
+        local ang = startAngle + (i-1)*angleStep 
+        local r = (i % 2 == 1) and STAR_RADIUS or STAR_RADIUS * 0.4 
+        STAR_POINTS[i] = Vector3.new( 
+            math.cos(ang) * r, 
+            TELEPORT_HEIGHT, 
+            math.sin(ang) * r 
+        ) 
+    end 
+end 
+
+-- ✅ AUTO QUEUE 
+local JoinQueueRemote = nil 
+task.spawn(function() 
+    pcall(function() 
+        JoinQueueRemote = ReplicatedStorage:WaitForChild("Remotes", 60):WaitForChild("Matchmaking", 60):WaitForChild("JoinQueue", 60) 
+    end) 
+end) 
+
+local function RunAutoQueue() 
+    if not JoinQueueRemote or not Features.Main.AutoQueue then return end 
+    pcall(function() JoinQueueRemote:InvokeServer(Features.Main.QueueMode) end) 
+end 
+
+-- 🔫 AUTO PICK FUNCTION
+local function RunAutoPick()
+    if not Features.Main.AutoPick then return end
+    pcall(function()
+        local args = {{"Shotgun", "Handgun", "Fists", "Grenade"}}
+        local remote = ReplicatedStorage:FindFirstChild("Remotes")
+            and ReplicatedStorage.Remotes:FindFirstChild("Replication")
+            and ReplicatedStorage.Remotes.Replication:FindFirstChild("Fighter")
+            and ReplicatedStorage.Remotes.Replication.Fighter:FindFirstChild("PickWeapons")
+        
+        if remote then
+            remote:FireServer(unpack(args))
+        end
+    end)
+end
+
+-- 🗳️ AUTO VOTE FUNCTION
+local function RunAutoVote()
+    if not Features.Main.AutoVote then return end
+    pcall(function()
+        local args = {"Chess"}
+        local remote = ReplicatedStorage:FindFirstChild("Remotes")
+            and ReplicatedStorage.Remotes:FindFirstChild("Duels")
+            and ReplicatedStorage.Remotes.Duels:FindFirstChild("Vote")
+            
+        if remote then
+            remote:FireServer(unpack(args))
+        end
+    end)
+end
+
+-- 🎨 SWITCH UI
+local function CreateSwitch(parent, posY, labelText, callback, saveKey) 
+    local Container = Instance.new("Frame", parent) 
+    Container.Size = UDim2.new(1,0,0,24) 
+    Container.Position = UDim2.new(0,0,0,posY) 
+    Container.BackgroundTransparency = 1 
+     
+    local Switch = Instance.new("Frame", Container) 
+    Switch.Size = UDim2.new(0,26,0,14) 
+    Switch.Position = UDim2.new(0,2,0.5,-7) 
+    Switch.BackgroundColor3 = Color3.fromRGB(220,80,80) 
+    Switch.BorderSizePixel = 0 
+    Instance.new("UICorner", Switch).CornerRadius = UDim.new(1,0) 
+     
+    local Knob = Instance.new("Frame", Switch) 
+    Knob.Size = UDim2.new(0,10,0,10) 
+    Knob.Position = UDim2.new(0,2,0,2) 
+    Knob.BackgroundColor3 = Color3.new(1,1,1) 
+    Knob.BorderSizePixel = 0 
+    Instance.new("UICorner", Knob).CornerRadius = UDim.new(1,0) 
+     
+    local Label = Instance.new("TextLabel", Container) 
+    Label.Size = UDim2.new(1,-36,1,0) 
+    Label.Position = UDim2.new(0,34,0,0) 
+    Label.BackgroundTransparency = 1 
+    Label.Text = labelText 
+    Label.TextColor3 = Color3.new(0,0,0) 
+    Label.Font = Enum.Font.GothamSemibold 
+    Label.TextSize = 10 
+    Label.TextXAlignment = Enum.TextXAlignment.Left 
+     
+    local State = saveKey and LoadSaved(saveKey, true) or false 
+    local TweenInfo = TweenInfo.new(0.15, Enum.EasingStyle.Quad) 
+     
+    local function Update(newState) 
+        State = newState 
+        if saveKey then SaveSetting(saveKey, State) end 
+        TweenService:Create(Switch, TweenInfo, {BackgroundColor3 = State and Color3.fromRGB(80,180,80) or Color3.fromRGB(220,80,80)}):Play() 
+        TweenService:Create(Knob, TweenInfo, {Position = State and UDim2.new(0,14,0,2) or UDim2.new(0,2,0,2)}):Play() 
+        callback(State) 
+    end 
+     
+    Update(State) 
+    Switch.InputBegan:Connect(function(input) 
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then 
+            Update(not State) 
+        end 
+    end) 
+    return Switch, function() return State end, Update 
+end 
+
+-- 📋 QUEUE SELECTOR 
+local function CreateQueueSelector(parent, posY) 
+    local Container = Instance.new("Frame", parent) 
+    Container.Size = UDim2.new(1,0,0,26) 
+    Container.Position = UDim2.new(0,0,0,posY) 
+    Container.BackgroundTransparency = 1 
+     
+    local Button = Instance.new("TextButton", Container) 
+    Button.Size = UDim2.new(1,0,1,0) 
+    Button.BackgroundColor3 = Color3.new(0.2,0.2,0.2) 
+    Button.TextColor3 = Color3.new(1,1,1) 
+    Button.Font = Enum.Font.Gotham 
+    Button.TextSize = 10 
+    Instance.new("UICorner", Button).CornerRadius = UDim.new(0,4) 
+     
+    local Options = Instance.new("Frame", Container) 
+    Options.Size = UDim2.new(1,0,0,130) 
+    Options.Position = UDim2.new(0,0,1,4) 
+    Options.BackgroundColor3 = Color3.new(1,1,1) 
+    Options.Visible = false 
+    Instance.new("UICorner", Options).CornerRadius = UDim.new(0,4) 
+     
+    local List = {"1v1","2v2","3v3","4v4","5v5"}  
+    for i,mode in pairs(List) do 
+        local OptBtn = Instance.new("TextButton", Options) 
+        OptBtn.Size = UDim2.new(1,0,0,24) 
+        OptBtn.Position = UDim2.new(0,0,0,(i-1)*26) 
+        OptBtn.BackgroundTransparency = 0.2 
+        OptBtn.BackgroundColor3 = Color3.new(1,1,1) 
+        OptBtn.Text = mode 
+        OptBtn.TextColor3 = Color3.new(0,0,0) 
+        OptBtn.Font = Enum.Font.Gotham 
+        OptBtn.TextSize = 10 
+        OptBtn.MouseButton1Click:Connect(function() 
+            Features.Main.QueueMode = mode 
+            SaveSetting("QueueMode", mode) 
+            Button.Text = "Mode: "..mode 
+            Options.Visible = false 
+        end) 
+    end 
+     
+    Button.Text = "Mode: "..Features.Main.QueueMode 
+    Button.MouseButton1Click:Connect(function() 
+        Options.Visible = not Options.Visible 
+    end) 
+    return Container 
+end 
+
+-- 🎯 TARGET VALIDATION
+local function IsValidTarget(char) 
+    if not char then return false end 
+    local hum = char:FindFirstChildWhichIsA("Humanoid", true) 
+    local hrp = char:FindFirstChild("HumanoidRootPart", true) 
+    if not hum or not hrp or hum.Health <= 0 then return false end 
+    local ply = Players:GetPlayerFromCharacter(char) 
+    if not ply or ply == plr then return false end 
+    if (hrp.Position - Camera.CFrame.Position).Magnitude > MAX_RANGE then return false end 
+    return true, char:FindFirstChild("Head", true) 
+end 
+
+-- 🌐 GLOBAL TARGETING
+local function GetClosestTarget() 
+    local bestDist, bestHead = math.huge, nil 
+    local myChar = plr.Character
+    local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local origin = myHRP and myHRP.Position or Camera.CFrame.Position
+
+    for _, ply in Players:GetPlayers() do 
+        local valid, head = IsValidTarget(ply.Character) 
+        if valid and head then 
+            local dist = (head.Position - origin).Magnitude 
+            if dist < bestDist then 
+                bestDist = dist 
+                bestHead = head 
+            end 
+        end 
+    end 
+    return bestHead 
+end 
+
+-- ✅ SNAP AIM FUNCTION 
+local function FullInstantSnap() 
+    if not INSTANT_SNAP_ALWAYS then return end 
+    local snapTarget = GetClosestTarget() 
+    if snapTarget then 
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, snapTarget.Position) 
+    end 
+end 
+
+local function TeleportToTargetNow() 
+    local char = plr.Character 
+    if not char then return end 
+    local myHRP = char:FindFirstChild("HumanoidRootPart", true) 
+    if not myHRP then return end 
+    CurrentTargetHead = GetClosestTarget() 
+    CurrentCornerIndex = 1 
+    LastCornerSwitch = 0 
+    if CurrentTargetHead then 
+        myHRP.CFrame = CFrame.new(CurrentTargetHead.Position + STAR_POINTS[1], CurrentTargetHead.Position) 
+        FullInstantSnap() 
+    end 
+end 
+
+local function UpdateRagebotState(state) 
+    Features.Main.Ragebot = state 
+    SaveSetting("Ragebot", state) 
+    local char = plr.Character 
+    if not char then return end 
+    local myHRP = char:FindFirstChild("HumanoidRootPart", true) 
+    local myHum = char:FindFirstChildWhichIsA("Humanoid", true) 
+    if not myHRP or not myHum then return end 
+    if state then 
+        workspace.Gravity = 0 
+        myHum.PlatformStand = true 
+        TeleportToTargetNow() 
+    else 
+        workspace.Gravity = OriginalGravity 
+        myHum.PlatformStand = false 
+        CurrentTargetHead = nil 
+        task.wait(0.1) 
+        workspace.Gravity = OriginalGravity 
+    end 
+end 
+
+local function TeleportAroundStar() 
+    if not Features.Main.Ragebot then return end 
+    if not CurrentTargetHead or not CurrentTargetHead.Parent or not IsValidTarget(CurrentTargetHead.Parent) then 
+        CurrentTargetHead = GetClosestTarget() 
+        CurrentCornerIndex = 1 
+        if not CurrentTargetHead then return end 
+    end 
+    local char = plr.Character 
+    if not char then return end 
+    local myHRP = char:FindFirstChild("HumanoidRootPart", true) 
+    if not myHRP then return end 
+    local now = os.clock() 
+    if now - LastCornerSwitch >= CORNER_SWITCH_SPEED then 
+        CurrentCornerIndex = CurrentCornerIndex + 1 
+        if CurrentCornerIndex > #STAR_POINTS then 
+            CurrentCornerIndex = 1 
+        end 
+        LastCornerSwitch = now 
+    end 
+    local finalPos = CurrentTargetHead.Position + STAR_POINTS[CurrentCornerIndex] 
+    myHRP.CFrame = CFrame.new(finalPos, CurrentTargetHead.Position) 
+end 
+
+-- ✅ RESPAWN HANDLER 
+plr.CharacterAdded:Connect(function() 
+    task.wait(0.3) 
+    workspace.Gravity = OriginalGravity 
+    UpdateRagebotState(Features.Main.Ragebot) 
+end) 
+
+-- 📦 UI ENVIRONMENT 
+local LMG2L = {} 
+LMG2L["ScreenGui_1"] = Instance.new("ScreenGui") 
+LMG2L["ScreenGui_1"].ZIndexBehavior = Enum.ZIndexBehavior.Sibling 
+LMG2L["ScreenGui_1"].ResetOnSpawn = false 
+LMG2L["ScreenGui_1"].DisplayOrder = 999999 
+LMG2L["ScreenGui_1"].Parent = plr:WaitForChild("PlayerGui", 60) 
+
+local BackgroundBlur = Instance.new("BlurEffect") 
+BackgroundBlur.Name = "UIBlur" 
+BackgroundBlur.Size = 12 
+BackgroundBlur.Enabled = Features.UI_Open 
+BackgroundBlur.Parent = Lighting 
+
+-- === MAIN TAB ONLY === 
+local MainWin = Instance.new("Frame", LMG2L["ScreenGui_1"]) 
+MainWin.BorderSizePixel=0; MainWin.BackgroundColor3=Color3.new(1,1,1); MainWin.BackgroundTransparency=0.6 
+MainWin.Size=UDim2.new(0,120,0,210); MainWin.Position=UDim2.new(0,132,0,4) 
+Instance.new("UICorner",MainWin).CornerRadius=UDim.new(0,16) 
+Instance.new("UIDragDetector",MainWin) 
+
+local MainInner = Instance.new("Frame",MainWin) 
+MainInner.BorderSizePixel=0; MainInner.BackgroundColor3=Color3.new(1,1,1); MainInner.BackgroundTransparency=0.4 
+MainInner.Size=UDim2.new(0,110,0,198); MainInner.Position=UDim2.new(0,5,0,5) 
+Instance.new("UICorner",MainInner).CornerRadius=UDim.new(0,16) 
+
+local MainHeader = Instance.new("TextLabel",MainInner) 
+MainHeader.BorderSizePixel=0; MainHeader.BackgroundColor3=Color3.new(1,1,1); MainHeader.BackgroundTransparency=0.3 
+MainHeader.Size=UDim2.new(0,106,0,22); MainHeader.Position=UDim2.new(0,2,0,0); MainHeader.Text="Main"; MainHeader.TextColor3=Color3.new(0,0,0) 
+Instance.new("UICorner",MainHeader).CornerRadius=UDim.new(0,16) 
+
+-- Arranged options inside the Main window frame
+CreateSwitch(MainInner, 30, "Ragebot", UpdateRagebotState, "Ragebot") 
+CreateSwitch(MainInner, 58, "Auto Pick", function(s) Features.Main.AutoPick = s end, "AutoPick") 
+CreateSwitch(MainInner, 86, "Auto Vote", function(s) Features.Main.AutoVote = s end, "AutoVote") 
+CreateSwitch(MainInner, 114, "Auto Queue", function(s) Features.Main.AutoQueue = s; SaveSetting("AutoQueue",s) end, "AutoQueue") 
+CreateQueueSelector(MainInner, 142) 
+
+-- === TOGGLE BUTTON === 
+local ToggleBtn = Instance.new("TextButton", LMG2L["ScreenGui_1"]) 
+ToggleBtn.BorderSizePixel=0; ToggleBtn.BackgroundColor3=Color3.new(1,1,1); ToggleBtn.BackgroundTransparency=0.3 
+ToggleBtn.Size=UDim2.new(0,40,0,30); 
+ToggleBtn.Position=UDim2.new(0, 10, 0, 10); 
+ToggleBtn.Text=Features.UI_Open and "Hide" or "Open"; ToggleBtn.TextColor3=Color3.new(0,0,0) 
+ToggleBtn.Font = Enum.Font.GothamBold 
+ToggleBtn.TextSize = 11 
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6) 
+
+ToggleBtn.MouseButton1Click:Connect(function() 
+    Features.UI_Open = not Features.UI_Open 
+    SaveSetting("UI_Open", Features.UI_Open) 
+    MainWin.Visible = Features.UI_Open 
+    BackgroundBlur.Enabled = Features.UI_Open 
+    ToggleBtn.Text = Features.UI_Open and "Hide" or "Open" 
+end) 
+
+-- ✅ INITIAL VISIBILITY STATE
+MainWin.Visible = Features.UI_Open 
+
+-- ✅ MAIN OPERATIONAL LOOP
+RunService:BindToRenderStep("MainLoop", Enum.RenderPriority.Camera.Value + 10, function() 
+    TeleportAroundStar() 
+    if Features.Main.Ragebot then 
+        FullInstantSnap() 
+    end 
+end) 
+
+-- ✅ THROTTLED BACKGROUND LOOP
+task.spawn(function()
+    while task.wait(1) do 
+        RunAutoQueue() 
+        RunAutoPick() 
+        RunAutoVote() 
+    end
+end)
+
+return LMG2L["ScreenGui_1"]
