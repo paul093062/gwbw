@@ -16,19 +16,32 @@ local STAR_RADIUS = 4
 local CORNER_SWITCH_SPEED = 0.12 
 local INSTANT_SNAP_ALWAYS = true 
 
--- ✅ LOAD/SAVE
+-- 📦 UI ENVIRONMENT 
+local LMG2L = {} 
+LMG2L["ScreenGui_1"] = Instance.new("ScreenGui") 
+LMG2L["ScreenGui_1"].ZIndexBehavior = Enum.ZIndexBehavior.Sibling 
+LMG2L["ScreenGui_1"].ResetOnSpawn = false 
+LMG2L["ScreenGui_1"].DisplayOrder = 999999 
+LMG2L["ScreenGui_1"].Parent = plr:WaitForChild("PlayerGui", 60) 
+
+-- ✅ LOAD/SAVE (Fixed fallback issue forcing true)
 local function LoadSaved(key, default) 
     local defaultStates = { 
-        Ragebot = true,     -- Force always on by default
-        AutoQueue = true,   -- Force always on by default
+        Ragebot = true,     
+        AutoQueue = true,   
         QueueMode = "1v1", 
         UI_Open = false,
-        AutoPick = true,    -- Force always on by default
-        AutoVote = true     -- Force always on by default
+        AutoPick = true,    
+        AutoVote = true     
     } 
     local p_default = defaultStates[key] ~= nil and defaultStates[key] or default
     local ok, val = pcall(function() return plr:GetAttribute("OishiHub_"..key) end) 
-    return ok and val ~= nil and val or p_default
+    
+    -- Explicitly check if the retrieved value is nil. If it is false, return false.
+    if ok and val ~= nil then
+        return val
+    end
+    return p_default
 end 
 
 local function SaveSetting(key, value) 
@@ -52,7 +65,170 @@ local CurrentTargetHead = nil
 local CurrentCornerIndex = 1 
 local LastCornerSwitch = 0 
 
--- ✅ SAVE ORIGINAL GRAVITY ON START + WHEN IT CHANGES 
+-- 🔄 STACKING NOTIFICATION UTILITY
+local ActiveNotifications = {}
+local NOTIF_HEIGHT = 16
+local NOTIF_SPACING = 4
+local BASE_Y_POS = -70
+
+local function RepositionNotifications()
+    for index, frame in ipairs(ActiveNotifications) do
+        local targetYOffset = BASE_Y_POS - ((index - 1) * (NOTIF_HEIGHT + NOTIF_SPACING))
+        TweenService:Create(frame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = UDim2.new(0.05, 0, 0.5, targetYOffset)
+        }):Play()
+    end
+end
+
+-- ✅ CUSTOM LEFT-POSITIONED STACKING NOTIFICATION FUNCTION
+local function SendDeathNotification(playerName)
+    task.spawn(function()
+        local NotifFrame = Instance.new("Frame")
+        NotifFrame.Size = UDim2.new(0, 0, 0, NOTIF_HEIGHT) 
+        NotifFrame.Position = UDim2.new(0.05, -20, 0.5, BASE_Y_POS) 
+        NotifFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        NotifFrame.BackgroundTransparency = 0.2
+        NotifFrame.BorderSizePixel = 0
+        NotifFrame.Parent = LMG2L["ScreenGui_1"]
+        
+        local Corner = Instance.new("UICorner")
+        Corner.CornerRadius = UDim.new(0, 4)
+        Corner.Parent = NotifFrame
+        
+        local Stroke = Instance.new("UIStroke")
+        Stroke.Color = Color3.fromRGB(255, 60, 60)
+        Stroke.Thickness = 1
+        Stroke.Parent = NotifFrame
+
+        local NotifText = Instance.new("TextLabel")
+        NotifText.Size = UDim2.new(1, 0, 1, 0)
+        NotifText.BackgroundTransparency = 1
+        NotifText.Text = "💀 " .. playerName
+        NotifText.TextColor3 = Color3.new(1, 1, 1)
+        NotifText.Font = Enum.Font.GothamBold
+        NotifText.TextSize = 8 
+        NotifText.Parent = NotifFrame
+
+        table.insert(ActiveNotifications, 1, NotifFrame)
+        RepositionNotifications()
+
+        TweenService:Create(NotifFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, 110, 0, NOTIF_HEIGHT),
+            Position = UDim2.new(0.05, 0, 0.5, NotifFrame.Position.Y.Offset)
+        }):Play()
+
+        task.wait(2.25)
+
+        local findIdx = table.find(ActiveNotifications, NotifFrame)
+        if findIdx then
+            table.remove(ActiveNotifications, findIdx)
+            RepositionNotifications()
+        end
+
+        local fadeTween = TweenService:Create(NotifFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, NOTIF_HEIGHT),
+            Position = UDim2.new(0.05, -20, 0.5, NotifFrame.Position.Y.Offset),
+            BackgroundTransparency = 1
+        })
+        fadeTween:Play()
+        fadeTween.Completed:Connect(function()
+            NotifFrame:Destroy()
+        end)
+    end)
+end
+
+-- ✅ CREATES A HEAD HEALTH BAR FOR PLAYERS WITH LEFT-SIDE HEALTH VALUE
+local function CreateOverheadHealth(player)
+    if player == plr then return end 
+    
+    local function onCharAdded(char)
+        local head = char:WaitForChild("Head", 10)
+        local humanoid = char:WaitForChild("Humanoid", 10)
+        if not head or not humanoid then return end
+        
+        if head:FindFirstChild("OverheadHealth") then
+            head.OverheadHealth:Destroy()
+        end
+        
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "OverheadHealth"
+        billboard.Size = UDim2.new(0, 50, 0, 6)
+        billboard.StudsOffset = Vector3.new(0, 2, 0) 
+        billboard.AlwaysOnTop = true
+        billboard.Parent = head
+        
+        local bg = Instance.new("Frame")
+        bg.Size = UDim2.new(1, 0, 1, 0)
+        bg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        bg.BorderSizePixel = 0
+        bg.Parent = billboard
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(1, 0)
+        corner.Parent = bg
+        
+        local fill = Instance.new("Frame")
+        fill.Size = UDim2.new(humanoid.Health / humanoid.MaxHealth, 0, 1, 0)
+        fill.BackgroundColor3 = Color3.fromRGB(0, 255, 100) 
+        fill.BorderSizePixel = 0
+        fill.Parent = bg
+        
+        local corner2 = Instance.new("UICorner")
+        corner2.CornerRadius = UDim.new(1, 0)
+        corner2.Parent = fill
+
+        local healthText = Instance.new("TextLabel")
+        healthText.Size = UDim2.new(0, 30, 1, 4) 
+        healthText.Position = UDim2.new(0, -34, 0, -2) 
+        healthText.BackgroundTransparency = 1
+        healthText.Text = tostring(math.floor(humanoid.Health))
+        healthText.TextColor3 = Color3.fromRGB(0, 255, 100)
+        healthText.Font = Enum.Font.GothamBold
+        healthText.TextSize = 9
+        healthText.TextXAlignment = Enum.TextXAlignment.Right 
+        healthText.Parent = bg
+
+        local connection
+        connection = humanoid.HealthChanged:Connect(function(health)
+            if not fill.Parent then connection:Disconnect() return end
+            local healthPercent = math.clamp(health / humanoid.MaxHealth, 0, 1)
+            healthText.Text = tostring(math.floor(health))
+            TweenService:Create(fill, TweenInfo.new(0.1, Enum.EasingStyle.Quad), {Size = UDim2.new(healthPercent, 0, 1, 0)}):Play()
+        end)
+    end
+
+    player.CharacterAdded:Connect(onCharAdded)
+    if player.Character then onCharAdded(player.Character) end
+end
+
+-- ✅ PLAYER TRACKING
+local function TrackPlayer(player)
+    CreateOverheadHealth(player)
+    
+    player.CharacterAdded:Connect(function(char)
+        local humanoid = char:WaitForChild("Humanoid", 10)
+        if humanoid then
+            humanoid.Died:Connect(function()
+                SendDeathNotification(player.Name)
+            end)
+        end
+    end)
+    
+    if player.Character then
+        local humanoid = player.Character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.Died:Connect(function()
+                SendDeathNotification(player.Name)
+            end)
+        end
+    end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    TrackPlayer(player)
+end
+Players.PlayerAdded:Connect(TrackPlayer)
+
 task.spawn(function() 
     workspace:GetPropertyChangedSignal("Gravity"):Connect(function() 
         if not Features.Main.Ragebot then 
@@ -246,7 +422,6 @@ local function GetClosestTarget()
             if dist < bestDist then 
                 bestDist = dist 
                 bestHead = head 
-                -- Cache current target head globally for the triggerbot
                 CurrentTargetHead = head
             end 
         end 
@@ -328,14 +503,6 @@ plr.CharacterAdded:Connect(function()
     UpdateRagebotState(Features.Main.Ragebot) 
 end) 
 
--- 📦 UI ENVIRONMENT 
-local LMG2L = {} 
-LMG2L["ScreenGui_1"] = Instance.new("ScreenGui") 
-LMG2L["ScreenGui_1"].ZIndexBehavior = Enum.ZIndexBehavior.Sibling 
-LMG2L["ScreenGui_1"].ResetOnSpawn = false 
-LMG2L["ScreenGui_1"].DisplayOrder = 999999 
-LMG2L["ScreenGui_1"].Parent = plr:WaitForChild("PlayerGui", 60) 
-
 local BackgroundBlur = Instance.new("BlurEffect") 
 BackgroundBlur.Name = "UIBlur" 
 BackgroundBlur.Size = 12 
@@ -359,18 +526,18 @@ MainHeader.BorderSizePixel=0; MainHeader.BackgroundColor3=Color3.new(1,1,1); Mai
 MainHeader.Size=UDim2.new(0,106,0,22); MainHeader.Position=UDim2.new(0,2,0,0); MainHeader.Text="Main"; MainHeader.TextColor3=Color3.new(0,0,0) 
 Instance.new("UICorner",MainHeader).CornerRadius=UDim.new(0,16) 
 
--- Arranged options inside the Main window frame
+-- Arranged options inside the Main window frame (Added correct dictionary updates to callbacks)
 CreateSwitch(MainInner, 30, "Ragebot", UpdateRagebotState, "Ragebot") 
 CreateSwitch(MainInner, 58, "Auto Pick", function(s) Features.Main.AutoPick = s end, "AutoPick") 
 CreateSwitch(MainInner, 86, "Auto Vote", function(s) Features.Main.AutoVote = s end, "AutoVote") 
-CreateSwitch(MainInner, 114, "Auto Queue", function(s) Features.Main.AutoQueue = s; SaveSetting("AutoQueue",s) end, "AutoQueue") 
+CreateSwitch(MainInner, 114, "Auto Queue", function(s) Features.Main.AutoQueue = s end, "AutoQueue") 
 CreateQueueSelector(MainInner, 142) 
 
 -- === TOGGLE BUTTON === 
 local ToggleBtn = Instance.new("TextButton", LMG2L["ScreenGui_1"]) 
 ToggleBtn.BorderSizePixel=0; ToggleBtn.BackgroundColor3=Color3.new(1,1,1); ToggleBtn.BackgroundTransparency=0.3 
 ToggleBtn.Size=UDim2.new(0,40,0,30); 
-ToggleBtn.Position=UDim2.new(0, 10, 0, 10); 
+ToggleBtn.Position=UDim2.new(0, 70, 0, 10); -- 🔄 Changed X offset from 10 to 70 to shift it right
 ToggleBtn.Text=Features.UI_Open and "Hide" or "Open"; ToggleBtn.TextColor3=Color3.new(0,0,0) 
 ToggleBtn.Font = Enum.Font.GothamBold 
 ToggleBtn.TextSize = 11 
@@ -384,21 +551,19 @@ ToggleBtn.MouseButton1Click:Connect(function()
     ToggleBtn.Text = Features.UI_Open and "Hide" or "Open" 
 end) 
 
--- ✅ INITIAL VISIBILITY STATE
 MainWin.Visible = Features.UI_Open 
 
 -- ✅ MAIN OPERATIONAL LOOP
 RunService:BindToRenderStep("MainLoop", Enum.RenderPriority.Camera.Value + 10, function() 
-    TeleportAroundStar() 
     if Features.Main.Ragebot then 
+        TeleportAroundStar() 
         FullInstantSnap() 
          
         -- ⚡ TRIGGERBOT / AUTO-CLICKER LOGIC
         if CurrentTargetHead and CurrentTargetHead.Parent and IsValidTarget(CurrentTargetHead.Parent) then
             local vpSize = Camera.ViewportSize
-            -- Click down and release instantly at the upper left side of the viewport (Shifted further UP)
             local clickX = vpSize.X * 0.05
-            local clickY = vpSize.Y * 0.05 -- 🟢 Decreased from 0.15 to 0.05 to shift it up higher
+            local clickY = vpSize.Y * 0.05 
             VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, true, game, 0)
             VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, false, game, 0)
         end
