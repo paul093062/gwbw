@@ -392,13 +392,13 @@ RunService:BindToRenderStep("MainLoop", Enum.RenderPriority.Camera.Value + 10, f
     TeleportAroundStar() 
     if Features.Main.Ragebot then 
         FullInstantSnap() 
-        
+         
         -- ⚡ TRIGGERBOT / AUTO-CLICKER LOGIC
         if CurrentTargetHead and CurrentTargetHead.Parent and IsValidTarget(CurrentTargetHead.Parent) then
             local vpSize = Camera.ViewportSize
-            -- Click down and release instantly at the upper left side of the viewport
-            local clickX = vpSize.X * 0.15
-            local clickY = vpSize.Y * 0.15
+            -- Click down and release instantly at the upper left side of the viewport (Shifted further UP)
+            local clickX = vpSize.X * 0.05
+            local clickY = vpSize.Y * 0.05 -- 🟢 Decreased from 0.15 to 0.05 to shift it up higher
             VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, true, game, 0)
             VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, false, game, 0)
         end
