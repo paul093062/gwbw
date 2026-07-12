@@ -5,6 +5,7 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService") 
 local ReplicatedStorage = game:GetService("ReplicatedStorage") 
 local Lighting = game:GetService("Lighting") 
+local VirtualInputManager = game:GetService("VirtualInputManager") -- 🔫 Added for Auto-Shoot/Triggerbot
 local plr = Players.LocalPlayer 
 local WorldRoot = workspace 
 
@@ -98,7 +99,7 @@ local function RunAutoPick()
             and ReplicatedStorage.Remotes:FindFirstChild("Replication")
             and ReplicatedStorage.Remotes.Replication:FindFirstChild("Fighter")
             and ReplicatedStorage.Remotes.Replication.Fighter:FindFirstChild("PickWeapons")
-        
+            
         if remote then
             remote:FireServer(unpack(args))
         end
@@ -245,6 +246,8 @@ local function GetClosestTarget()
             if dist < bestDist then 
                 bestDist = dist 
                 bestHead = head 
+                -- Cache current target head globally for the triggerbot
+                CurrentTargetHead = head
             end 
         end 
     end 
@@ -389,6 +392,16 @@ RunService:BindToRenderStep("MainLoop", Enum.RenderPriority.Camera.Value + 10, f
     TeleportAroundStar() 
     if Features.Main.Ragebot then 
         FullInstantSnap() 
+        
+        -- ⚡ TRIGGERBOT / AUTO-CLICKER LOGIC
+        if CurrentTargetHead and CurrentTargetHead.Parent and IsValidTarget(CurrentTargetHead.Parent) then
+            local vpSize = Camera.ViewportSize
+            -- Click down and release instantly at the upper left side of the viewport
+            local clickX = vpSize.X * 0.15
+            local clickY = vpSize.Y * 0.15
+            VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, true, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, false, game, 0)
+        end
     end 
 end) 
 
