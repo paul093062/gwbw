@@ -23,6 +23,7 @@ local function LoadSaved(key, default)
     local defaultStates = { 
         Aimbot = true,      -- Now defaults to true
         ShowFOV = true,     -- Now defaults to true
+        SilentAim = false,  -- Added Silent Aim default
         Ragebot = false,    -- Turned off by default
         ESP = true, 
         Box = true, 
@@ -49,6 +50,7 @@ local Features = {
     Main = { 
         Aimbot = LoadSaved("Aimbot", true), 
         ShowFOV = LoadSaved("ShowFOV", true), 
+        SilentAim = LoadSaved("SilentAim", false), -- Added Silent Aim track
         Ragebot = LoadSaved("Ragebot", false), 
         TeamCheck = LoadSaved("TeamCheck", true), 
         WallCheck = LoadSaved("WallCheck", true) 
@@ -329,7 +331,6 @@ local RagebotData = {
     CurrentEnemy = nil,
     HeartbeatConn = nil,
     DesyncConn = nil,
-    DelayTask = nil,
     OldStartShooting = nil,
     GunModule = nil,
     UtilModule = nil
@@ -419,16 +420,6 @@ local function HookGunFramework()
             return unpack(results)
         end
 
-        if not RagebotData.IsDesynced or RagebotData.CurrentEnemy ~= currentTarget then
-            StartDesync(currentTarget)
-            task.wait(0.1)
-        end
-
-        if RagebotData.DelayTask then
-            task.cancel(RagebotData.DelayTask)
-            RagebotData.DelayTask = nil
-        end
-
         local targetHead = currentTarget.Character:FindFirstChild("Head")
         if not targetHead then return unpack(results) end
 
@@ -441,10 +432,6 @@ local function HookGunFramework()
         dataTable[utf8.char(1)] = RagebotData.UtilModule:EncodeCFrame(CFrame.new(headPos))
         dataTable[utf8.char(2)] = targetHead
         dataTable[utf8.char(3)] = RagebotData.UtilModule:EncodeCFrame(objectSpaceOffset)
-
-        RagebotData.DelayTask = task.delay(0.15, function()
-            StopDesync()
-        end)
 
         return unpack(results)
     end
@@ -466,12 +453,21 @@ local function UpdateRagebotState(state)
         if RagebotData.HeartbeatConn then RagebotData.HeartbeatConn:Disconnect() end
         RagebotData.HeartbeatConn = RunService.Heartbeat:Connect(function()
             if not Features.Main.Ragebot then return end
-            -- Uses your closest target picker script
+            
             local targetHead = GetClosestTarget(true, true)
             if targetHead and targetHead.Parent then
-                RagebotData.Target = Players:GetPlayerFromCharacter(targetHead.Parent)
+                local targetPlayer = Players:GetPlayerFromCharacter(targetHead.Parent)
+                RagebotData.Target = targetPlayer
+                
+                -- AUTOMATIC TELEPORTATION LOOP WITHOUT NEEDING TO SHOOT
+                if targetPlayer then
+                    if not RagebotData.IsDesynced or RagebotData.CurrentEnemy ~= targetPlayer then
+                        StartDesync(targetPlayer)
+                    end
+                end
             else
                 RagebotData.Target = nil
+                StopDesync()
             end
         end)
     else
@@ -483,11 +479,117 @@ local function UpdateRagebotState(state)
     end
 end
 
+-- 🎯 SILENT AIM INTEGRATION
+local SilentAimData = setmetatable({}, {
+    __index = function(_, serviceName)
+        local ok, service = pcall(game.GetService, game, serviceName)
+        return ok and cloneref(service) or nil
+    end
+})
+
+local SilentAimState = {
+    Active = false,
+    Instance = nil,
+    HeartbeatConn = nil,
+    OriginalFunc = nil,
+    Target = nil
+}
+
+local function ToggleSilentAim(state)
+    Features.Main.SilentAim = state
+    SaveSetting("SilentAim", state)
+
+    if state then
+        if SilentAimState.Instance then return end
+
+        local LocalPlayer = SilentAimData.Players.LocalPlayer
+        local GunModule = require(LocalPlayer.PlayerScripts.Modules.ItemTypes.Gun)
+        local UtilModule = require(ReplicatedStorage.Modules.Utility)
+
+        SilentAimState.OriginalFunc = GunModule.StartShooting
+
+        SilentAimState.Instance = {
+            Shutdown = function(self)
+                SilentAimState.Active = false
+                if SilentAimState.HeartbeatConn then
+                    SilentAimState.HeartbeatConn:Disconnect()
+                    SilentAimState.HeartbeatConn = nil
+                end
+                if SilentAimState.OriginalFunc then
+                    GunModule.StartShooting = SilentAimState.OriginalFunc
+                    SilentAimState.OriginalFunc = nil
+                end
+                SilentAimState.Instance = nil
+            end
+        }
+
+        -- Target finder
+        SilentAimState.HeartbeatConn = RunService.Heartbeat:Connect(function()
+            if not SilentAimState.Active then return end
+            local myChar = LocalPlayer.Character
+            if not myChar then SilentAimState.Target = nil return end
+            local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+            if not myRoot then SilentAimState.Target = nil return end
+
+            local closest, dist = nil, math.huge
+            for _, player in next, SilentAimData.Players:GetPlayers() do
+                if player == LocalPlayer then continue end
+                if Features.Main.TeamCheck and player:GetAttribute("TeamID") == LocalPlayer:GetAttribute("TeamID") then continue end
+                local char = player.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                local head = char and char:FindFirstChild("Head")
+                local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+                if not (root and head and hum and hum.Health > 0) then continue end
+                local d = (myRoot.Position - root.Position).Magnitude
+                if d <= MAX_RANGE and d < dist then
+                    dist = d
+                    closest = player
+                end
+            end
+            SilentAimState.Target = closest
+        end)
+
+        -- Hook shoot function
+        GunModule.StartShooting = function(gun, ...)
+            local returns = {SilentAimState.OriginalFunc(gun, ...)}
+            if not SilentAimState.Active then return unpack(returns) end
+            if not gun.ClientFighter or not gun.ClientFighter.IsLocalPlayer then return unpack(returns) end
+
+            local packet = returns[3]
+            if not packet or typeof(packet) ~= "table" then return unpack(returns) end
+
+            returns[4] = true
+            local target = SilentAimState.Target
+            if not target or not target.Character then return unpack(returns) end
+            local head = target.Character:FindFirstChild("Head")
+            if not head then return unpack(returns) end
+
+            local headPos = head.Position
+            local headCFrame = head.CFrame
+            local offset = headCFrame:ToObjectSpace(CFrame.new(headPos + Vector3.new(math.random() * 0.1, math.random() * 0.1, math.random() * 0.1)))
+
+            packet[utf8.char(0)] = UtilModule:EncodeCFrame(CFrame.new(headPos, headPos + headCFrame.LookVector))
+            packet[utf8.char(1)] = UtilModule:EncodeCFrame(CFrame.new(headPos))
+            packet[utf8.char(2)] = head
+            packet[utf8.char(3)] = UtilModule:EncodeCFrame(offset)
+
+            return unpack(returns)
+        end
+
+        SilentAimState.Active = true
+    else
+        if SilentAimState.Instance then
+            SilentAimState.Instance:Shutdown()
+        end
+    end
+end
+
 -- ✅ RESPAWN HANDLER 
 plr.CharacterAdded:Connect(function() 
     task.wait(0.3) 
     workspace.Gravity = OriginalGravity 
     UpdateRagebotState(Features.Main.Ragebot) 
+    ToggleSilentAim(Features.Main.SilentAim)
     ToggleNoClip(Features.Misc.NoClip) 
     ToggleJump(Features.Misc.InfiniteJump) 
 end) 
@@ -632,13 +734,13 @@ BackgroundBlur.Parent = Lighting
 -- === MAIN TAB === 
 local MainWin = Instance.new("Frame", LMG2L["ScreenGui_1"]) 
 MainWin.BorderSizePixel=0; MainWin.BackgroundColor3=Color3.new(1,1,1); MainWin.BackgroundTransparency=0.6 
-MainWin.Size=UDim2.new(0,112,0,182); MainWin.Position=UDim2.new(0,132,0,4) 
+MainWin.Size=UDim2.new(0,112,0,210); MainWin.Position=UDim2.new(0,132,0,4) -- Expanded height from 182 to 210
 Instance.new("UICorner",MainWin).CornerRadius=UDim.new(0,16) 
 Instance.new("UIDragDetector",MainWin) 
 
 local MainInner = Instance.new("Frame",MainWin) 
 MainInner.BorderSizePixel=0; MainInner.BackgroundColor3=Color3.new(1,1,1); MainInner.BackgroundTransparency=0.4 
-MainInner.Size=UDim2.new(0,102,0,170); MainInner.Position=UDim2.new(0,6,0,6) 
+MainInner.Size=UDim2.new(0,102,0,198); MainInner.Position=UDim2.new(0,6,0,6) -- Expanded inner height from 170 to 198
 Instance.new("UICorner",MainInner).CornerRadius=UDim.new(0,16) 
 
 local MainHeader = Instance.new("TextLabel",MainInner) 
@@ -649,6 +751,7 @@ Instance.new("UICorner",MainHeader).CornerRadius=UDim.new(0,16)
 CreateSwitch(MainInner, 30, "Aimbot", function(s) Features.Main.Aimbot = s end, "Aimbot") 
 CreateSwitch(MainInner, 58, "Show FOV circle", function(s) Features.Main.ShowFOV = s; FOVCircle.Visible = s end, "ShowFOV") 
 CreateSwitch(MainInner, 86, "Ragebot", UpdateRagebotState, "Ragebot") 
+CreateSwitch(MainInner, 114, "Silent Aim", ToggleSilentAim, "SilentAim") -- Added Silent Aim Toggle
 
 -- === VISUAL TAB === 
 local VisualWin = Instance.new("Frame", LMG2L["ScreenGui_1"]) 
@@ -734,7 +837,7 @@ ToggleBtn.MouseButton1Click:Connect(function()
     ToggleBtn.Text = Features.UI_Open and "Hide" or "Open" 
 end) 
 
--- ✅ APPLY — ALL UI STARTS CLOSED 
+-- ✅ APPLY — ALL UI STARTS CLOSED  
 MainWin.Visible = Features.UI_Open 
 VisualWin.Visible = Features.UI_Open 
 MiscWin.Visible = Features.UI_Open 
@@ -742,6 +845,7 @@ SettingsWin.Visible = Features.UI_Open
 
 -- Initial trigger logic for loaded settings
 UpdateRagebotState(Features.Main.Ragebot)
+ToggleSilentAim(Features.Main.SilentAim)
 
 -- ✅ MAIN LOOP 
 RunService:BindToRenderStep("MainLoop", Enum.RenderPriority.Camera.Value + 10, function() 
